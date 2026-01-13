@@ -216,6 +216,23 @@ async function processImages(markdown, postSlug) {
 }
 
 /**
+ * 收集 Notion block 中的图片 Markdown（作为缺失时的兜底）
+ */
+function collectImageMarkdown(blocks, images = []) {
+  for (const block of blocks) {
+    if (block?.type === 'image' && typeof block.parent === 'string' && block.parent.trim()) {
+      images.push(block.parent.trim());
+    }
+
+    if (Array.isArray(block?.children) && block.children.length > 0) {
+      collectImageMarkdown(block.children, images);
+    }
+  }
+
+  return images;
+}
+
+/**
  * 从 Notion 获取文章
  */
 async function fetchPublishedPosts() {
@@ -250,7 +267,8 @@ async function processPost(page) {
   // 获取文章属性
   const title = properties.Title?.title[0]?.plain_text || 'Untitled';
   const slug = generateSlug(title);
-  const coverImage = properties['Featured Image']?.files[0]?.file.url
+  const coverFile = properties['Featured Image']?.files?.[0];
+  const coverImage = coverFile?.file?.url ?? coverFile?.external?.url ?? '';
   const publishedDate = properties['Published Date']?.date?.start || new Date().toISOString();
   const tags = properties.Tags?.multi_select?.map(tag => tag.name) || [];
   const category = properties.Category?.select?.name;
@@ -260,10 +278,18 @@ async function processPost(page) {
 
   // 转换为 Markdown
   const mdBlocks = await n2m.pageToMarkdown(page.id);
-  const { parent: content } = n2m.toMarkdownString(mdBlocks);
+  const mdString = n2m.toMarkdownString(mdBlocks);
+  const content = mdString.parent ?? mdString[Object.keys(mdString)[0]] ?? '';
+
+  // 某些情况下 Markdown 中可能未包含图片，这里兜底追加图片 block
+  const hasInlineImages = /!\[[^\]]*]\([^)]*\)/.test(content) || /<img\s+[^>]*src=/.test(content);
+  const fallbackImages = hasInlineImages ? [] : collectImageMarkdown(mdBlocks);
+  const contentWithFallbackImages = fallbackImages.length > 0
+    ? `${content}\n\n${fallbackImages.join('\n\n')}\n`
+    : content;
 
   // 处理图片
-  const processedContent = await processImages(content, slug);
+  const processedContent = await processImages(contentWithFallbackImages, slug);
 
   // 处理封面图
   let localCoverImage = '';
